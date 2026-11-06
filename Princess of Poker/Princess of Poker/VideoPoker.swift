@@ -31,6 +31,8 @@ let numberWords = ["zero", "one", "two", "three", "four", "five", "six", "seven"
     private var deck: [Card] = []
     private var introTask: Task<Void, Never>?
     let sound: Sound
+    /// Set when a kid is playing the downloaded game on his home computer (cash box rescue) instead of Larry at the casino.
+    var kidName: String?
     /// Called when the session ends; the Director takes over (game 10 or an ending screen).
     var onEnd: ((Ending) -> Void)?
 
@@ -237,7 +239,8 @@ struct VideoPokerView: View {
                                    startPoint: .top, endPoint: .bottom).ignoresSafeArea())
         .overlay {
             // Cashing out (yourself, or automatically when you don't qualify) cuts back to the casino instead.
-            if session.phase == .over, session.ending == .broke {
+            // A kid at home has no casino to leave; the story picks up on his computer instead.
+            if session.phase == .over, session.ending == .broke, session.kidName == nil {
                 endingOverlay
             }
         }
@@ -270,6 +273,13 @@ struct VideoPokerView: View {
 
     private var header: some View {
         HStack {
+            if let kid = session.kidName {
+                Text("\(kid.uppercased())'S COMPUTER")
+                    .font(.system(size: 11, weight: .black, design: .rounded))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.yellow, in: Capsule())
+            }
             Text("GAME \(session.game.number) OF 10")
                 .font(.system(size: 13, weight: .black, design: .rounded))
                 .foregroundStyle(.pink)

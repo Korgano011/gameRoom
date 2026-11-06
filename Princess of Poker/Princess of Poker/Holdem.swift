@@ -33,11 +33,11 @@ import SwiftUI
 
     /// Tonight's game. They take turns night by night; night 2 (the co-workers) is always blackjack.
     /// Blackjack, pai gow poker and craps are played at their own banked tables (`BlackjackTable`, `PaiGowTable`, `CrapsTable`) for real money,
-    /// and so are three card poker, let it ride and red dog (`BankedTable`).
+    /// and so are three card poker, let it ride, red dog, mississippi stud and crazy 4 poker (`BankedTable`).
     /// Hearts, nines, pedro and pişti are played at their own tables (`HeartsTable`, `NinesTable`, `PedroTable`, `PistiTable`) just for fun — they make no money;
     /// so are pepper, spades and domino hearts (`TrickTable`).
     enum Game: CaseIterable {
-        case texas, omaha, draw, caribbean, blackjack, paigow, craps, threeCard, letItRide, redDog
+        case texas, omaha, draw, caribbean, blackjack, paigow, craps, threeCard, letItRide, redDog, mississippiStud, crazy4
         case hearts, nines, pedro, pisti, big2, ninetyNine, ohHell, californiaJack, pepper, spades, dominoHearts, callItRight
         /// The day-by-day rotation: the money-makers, then a game of hearts.
         static let rotation: [Game] = [.texas, .omaha, .caribbean, .blackjack, .paigow, .craps, .hearts]
@@ -56,6 +56,8 @@ import SwiftUI
             case .threeCard: "Three Card Poker"
             case .letItRide: "Let It Ride"
             case .redDog: "Red Dog"
+            case .mississippiStud: "Mississippi Stud"
+            case .crazy4: "Crazy 4 Poker"
             case .hearts: "Hearts"
             case .nines: "Nines"
             case .pedro: "Pedro"
@@ -82,6 +84,8 @@ import SwiftUI
             case .threeCard: "3.circle.fill"
             case .letItRide: "arrow.uturn.backward.circle.fill"
             case .redDog: "dog.fill"
+            case .mississippiStud: "ferry.fill"
+            case .crazy4: "4.circle.fill"
             case .hearts: "suit.heart.fill"
             case .nines: "9.circle.fill"
             case .pedro: "person.2.fill"

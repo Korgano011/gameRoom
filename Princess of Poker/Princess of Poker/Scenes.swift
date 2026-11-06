@@ -1,7 +1,27 @@
 import SwiftUI
 
 enum Place {
-    case targetLot, casinoOutside, casino, street, sidewalk, salon, town, venue, home, bedroom, bathroom
+    case targetLot, casinoOutside, casino, street, sidewalk, salon, town, venue, home, bedroom, bathroom, kidRoom, backyard
+}
+
+/// What the downloaded Princess of Poker game shows on a kid's computer screen.
+struct KidScreen {
+    var game = 1
+    var credits = 200
+    var won = false
+    var over = false
+}
+
+enum KidRoomSpot {
+    /// Where the kid stands at his desk, and the keyboard he reaches for.
+    static let standX = 560.0
+    static let keyboard = CGPoint(x: 650, y: 418)
+    static let monitor = CGPoint(x: 725, y: 330)
+}
+
+enum BackyardSpot {
+    static let doorX = 150.0
+    static let shipX = 700.0
 }
 
 enum SalonSpot {
@@ -736,6 +756,8 @@ func drawStage(_ ctx: GraphicsContext, size: CGSize, director d: Director, now: 
     case .home: drawHome(world, d, now)
     case .bedroom: drawBedroom(world, d, now)
     case .bathroom: drawBathroom(world, now)
+    case .kidRoom: drawKidRoom(world, d, now)
+    case .backyard: drawBackyard(world, d, now)
     }
     if d.place == .targetLot {
         for i in 0..<d.corralCarts {
@@ -1046,12 +1068,28 @@ func drawHome(_ ctx: GraphicsContext, _ d: Director, _ now: Date) {
     // Front door
     ctx.fill(rect(20, 250, 120, 220), with: .color(Color(red: 0.45, green: 0.25, blue: 0.15)))
     ctx.fill(oval(CGPoint(x: 120, y: 370), 6), with: .color(.yellow))
-    // Window at night
+    // Window: sunny late morning after a morning game, otherwise night
     let win = CGRect(x: 230, y: 110, width: 200, height: 150)
-    ctx.fill(Path(win), with: .color(Color(red: 0.05, green: 0.05, blue: 0.2)))
     var w = ctx
     w.clip(to: Path(win))
-    stars(w, now, below: 260)
+    if d.homeDaytime {
+        w.fill(Path(win), with: .linearGradient(Gradient(colors: [Color(red: 0.35, green: 0.65, blue: 1), Color(red: 0.7, green: 0.88, blue: 1)]),
+                                                startPoint: CGPoint(x: 0, y: win.minY), endPoint: CGPoint(x: 0, y: win.maxY)))
+        let sun = CGPoint(x: win.minX + 150, y: win.minY + 38)
+        w.fill(oval(sun, 30), with: .color(Color(red: 1, green: 0.95, blue: 0.5).opacity(0.45)))
+        w.fill(oval(sun, 20), with: .color(Color(red: 1, green: 0.88, blue: 0.25)))
+        let drift = (now.timeIntervalSinceReferenceDate * 6).truncatingRemainder(dividingBy: 280)
+        for (cx, cy) in [(win.minX - 60 + drift, win.minY + 60.0), (win.minX + 80 + drift, win.minY + 30.0), (win.minX - 200 + drift, win.minY + 45.0)] {
+            for (dx, rr) in [(-16.0, 13.0), (0.0, 18.0), (17.0, 12.0)] { w.fill(oval(CGPoint(x: cx + dx, y: cy), rr), with: .color(.white.opacity(0.92))) }
+        }
+        // Green lawn and a tree across the street
+        w.fill(rect(win.minX, win.maxY - 34, win.width, 34), with: .color(Color(red: 0.3, green: 0.7, blue: 0.3)))
+        w.fill(rect(win.minX + 42, win.maxY - 70, 10, 40), with: .color(Color(red: 0.45, green: 0.3, blue: 0.15)))
+        w.fill(oval(CGPoint(x: win.minX + 47, y: win.maxY - 80), 26), with: .color(Color(red: 0.2, green: 0.55, blue: 0.25)))
+    } else {
+        w.fill(Path(win), with: .color(Color(red: 0.05, green: 0.05, blue: 0.2)))
+        stars(w, now, below: 260)
+    }
     ctx.stroke(Path(win), with: .color(.white), lineWidth: 8)
     ctx.stroke(Path { $0.move(to: CGPoint(x: win.midX, y: win.minY)); $0.addLine(to: CGPoint(x: win.midX, y: win.maxY)) }, with: .color(.white), lineWidth: 5)
     // Couch and lamp
@@ -1130,4 +1168,105 @@ func drawBedroom(_ ctx: GraphicsContext, _ d: Director, _ now: Date) {
     ctx.fill(Path(roundedRect: CGRect(x: vx - 32, y: 378, width: 12, height: 14), cornerRadius: 3), with: .color(.pink))
     ctx.fill(Path(ellipseIn: CGRect(x: vx + 30, y: 380, width: 28, height: 12)), with: .color(Color(red: 1, green: 0.9, blue: 0.95)))
     drawWallMirror(ctx, d, now, at: CGPoint(x: vx, y: BedroomSpot.mirrorY), stand: BedroomSpot.mirrorStand)
+}
+
+// MARK: Cash box rescue: a kid's bedroom computer and his backyard
+
+/// A boy's bedroom with a desk and a computer running the downloaded Princess of Poker game.
+func drawKidRoom(_ ctx: GraphicsContext, _ d: Director, _ now: Date) {
+    ctx.fill(rect(0, 0, Stage.W, 470), with: .color(Color(red: 0.72, green: 0.84, blue: 0.95)))
+    for x in stride(from: 0.0, to: Stage.W, by: 80) { ctx.fill(rect(x, 0, 4, 470), with: .color(.white.opacity(0.35))) }
+    ctx.fill(rect(0, 452, Stage.W, 18), with: .color(.white))
+    ctx.fill(rect(0, 470, Stage.W, 130), with: .color(Color(red: 0.45, green: 0.5, blue: 0.6)))
+    // Window: daylight between games, night sky after the day's games.
+    let win = CGRect(x: 90, y: 110, width: 180, height: 140)
+    var w = ctx
+    w.clip(to: Path(win))
+    if d.homeDaytime {
+        w.fill(Path(win), with: .linearGradient(Gradient(colors: [Color(red: 0.35, green: 0.65, blue: 1), Color(red: 0.7, green: 0.88, blue: 1)]),
+                                                startPoint: CGPoint(x: 0, y: win.minY), endPoint: CGPoint(x: 0, y: win.maxY)))
+        w.fill(oval(CGPoint(x: win.minX + 130, y: win.minY + 36), 18), with: .color(Color(red: 1, green: 0.88, blue: 0.25)))
+        w.fill(rect(win.minX, win.maxY - 30, win.width, 30), with: .color(Color(red: 0.3, green: 0.7, blue: 0.3)))
+    } else {
+        w.fill(Path(win), with: .color(Color(red: 0.05, green: 0.05, blue: 0.2)))
+        stars(w, now, below: 260)
+    }
+    ctx.stroke(Path(win), with: .color(.white), lineWidth: 8)
+    ctx.stroke(Path { $0.move(to: CGPoint(x: win.midX, y: win.minY)); $0.addLine(to: CGPoint(x: win.midX, y: win.maxY)) }, with: .color(.white), lineWidth: 5)
+    // A rocket poster and a bed with a race-car blanket.
+    ctx.fill(Path(roundedRect: CGRect(x: 330, y: 120, width: 90, height: 120), cornerRadius: 4), with: .color(Color(red: 0.1, green: 0.1, blue: 0.3)))
+    ctx.fill(Path { p in p.move(to: CGPoint(x: 375, y: 140)); p.addLine(to: CGPoint(x: 390, y: 200)); p.addLine(to: CGPoint(x: 360, y: 200)); p.closeSubpath() }, with: .color(.white))
+    ctx.fill(Path { p in p.move(to: CGPoint(x: 365, y: 200)); p.addLine(to: CGPoint(x: 385, y: 200)); p.addLine(to: CGPoint(x: 375, y: 225)); p.closeSubpath() }, with: .color(.orange))
+    ctx.fill(Path(roundedRect: CGRect(x: 40, y: 400, width: 330, height: 70), cornerRadius: 10), with: .color(.white))
+    ctx.fill(Path(roundedRect: CGRect(x: 90, y: 392, width: 280, height: 82), cornerRadius: 12), with: .color(Color(red: 0.85, green: 0.15, blue: 0.15)))
+    for k in 0..<4 { ctx.fill(rect(110 + Double(k) * 66, 425, 36, 12), with: .color(.white.opacity(0.8))) }
+    ctx.fill(Path(roundedRect: CGRect(x: 46, y: 372, width: 56, height: 32), cornerRadius: 12), with: .color(.white))
+    // Desk with the computer.
+    ctx.fill(rect(600, 420, 300, 16), with: .color(Color(red: 0.55, green: 0.38, blue: 0.22)))
+    ctx.fill(rect(612, 436, 12, 72), with: .color(Color(red: 0.45, green: 0.3, blue: 0.18)))
+    ctx.fill(rect(876, 436, 12, 72), with: .color(Color(red: 0.45, green: 0.3, blue: 0.18)))
+    ctx.fill(Path(roundedRect: CGRect(x: 610, y: 408, width: 90, height: 12), cornerRadius: 3), with: .color(Color(white: 0.2)))
+    ctx.fill(rect(718, 392, 14, 28), with: .color(Color(white: 0.25)))
+    ctx.fill(Path(roundedRect: CGRect(x: 690, y: 414, width: 70, height: 8), cornerRadius: 3), with: .color(Color(white: 0.25)))
+    let bezel = CGRect(x: 620, y: 255, width: 210, height: 140)
+    ctx.fill(Path(roundedRect: bezel, cornerRadius: 10), with: .color(Color(white: 0.12)))
+    let screen = bezel.insetBy(dx: 9, dy: 9)
+    ctx.fill(Path(roundedRect: screen, cornerRadius: 4), with: .color(Color(red: 0.05, green: 0.05, blue: 0.4)))
+    var sc = ctx
+    sc.clip(to: Path(roundedRect: screen, cornerRadius: 4))
+    let ks = d.kidScreen
+    sc.fill(rect(screen.minX, screen.minY, screen.width, 20), with: .color(.pink))
+    label(sc, "PRINCESS OF POKER", CGPoint(x: screen.midX, y: screen.minY + 10), size: 12, color: .white)
+    var bust = sc
+    bust.translateBy(x: screen.minX + 4, y: screen.minY + 24)
+    drawGirlBust(bust, size: CGSize(width: 70, height: 92), skin: .princessSkin, look: .princess, talking: false, now: now)
+    let tx = screen.minX + 136
+    if ks.won {
+        let blink = Int(now.timeIntervalSinceReferenceDate * 3) % 2 == 0
+        label(sc, "GAME 10!", CGPoint(x: tx, y: screen.minY + 52), size: 22, color: blink ? .yellow : .pink)
+        for k in 0..<5 { drawTwinkle(sc, CGPoint(x: screen.minX + 90 + Double(k) * 22, y: screen.minY + 30 + Double(k % 2) * 60), 5, .yellow) }
+    } else if ks.over {
+        label(sc, "GAME OVER", CGPoint(x: tx, y: screen.minY + 52), size: 18, color: .red)
+    } else {
+        label(sc, "GAME \(ks.game)", CGPoint(x: tx, y: screen.minY + 52), size: 20, color: .white)
+        for k in 0..<5 { sc.fill(rect(screen.minX + 86 + Double(k) * 20, screen.minY + 70, 15, 21), with: .color(.white)) }
+    }
+    label(sc, "CREDITS \(ks.credits)", CGPoint(x: tx, y: screen.maxY - 10), size: 12, color: .yellow, weight: .bold)
+}
+
+/// The back of a kid's house: back door, lawn and a fence, with room for the flying salon to land.
+func drawBackyard(_ ctx: GraphicsContext, _ d: Director, _ now: Date) {
+    if d.homeDaytime {
+        sky(ctx, [Color(red: 0.35, green: 0.65, blue: 1), Color(red: 0.75, green: 0.9, blue: 1)], to: 470)
+        ctx.fill(oval(CGPoint(x: 860, y: 80), 34), with: .color(Color(red: 1, green: 0.88, blue: 0.25)))
+    } else {
+        sky(ctx, [Color(red: 0.03, green: 0.03, blue: 0.15), Color(red: 0.12, green: 0.1, blue: 0.3)], to: 470)
+        stars(ctx, now, below: 300)
+        ctx.fill(oval(CGPoint(x: 860, y: 80), 26), with: .color(Color(red: 1, green: 0.97, blue: 0.8)))
+    }
+    // Wooden fence along the back, then the lawn.
+    for x in stride(from: 300.0, to: Stage.W, by: 34) {
+        ctx.fill(Path { p in p.move(to: CGPoint(x: x, y: 470)); p.addLine(to: CGPoint(x: x, y: 380)); p.addLine(to: CGPoint(x: x + 14, y: 368))
+            p.addLine(to: CGPoint(x: x + 28, y: 380)); p.addLine(to: CGPoint(x: x + 28, y: 470)); p.closeSubpath() },
+                 with: .color(Color(red: 0.75, green: 0.6, blue: 0.42)))
+    }
+    ctx.fill(rect(0, 460, Stage.W, 140), with: .color(d.homeDaytime ? Color(red: 0.3, green: 0.68, blue: 0.3) : Color(red: 0.12, green: 0.32, blue: 0.16)))
+    // The back of the house: siding, a lit window and the back door with steps.
+    ctx.fill(rect(0, 150, 300, 390), with: .color(Color(red: 0.85, green: 0.82, blue: 0.72)))
+    for y in stride(from: 160.0, to: 540, by: 22) { ctx.fill(rect(0, y, 300, 2), with: .color(.black.opacity(0.12))) }
+    ctx.fill(Path { p in p.move(to: CGPoint(x: -20, y: 160)); p.addLine(to: CGPoint(x: 150, y: 60)); p.addLine(to: CGPoint(x: 320, y: 160)); p.closeSubpath() },
+             with: .color(Color(red: 0.4, green: 0.2, blue: 0.15)))
+    ctx.fill(rect(200, 220, 80, 70), with: .color(d.homeDaytime ? Color(red: 0.7, green: 0.85, blue: 1) : Color(red: 1, green: 0.9, blue: 0.55)))
+    ctx.stroke(Path(CGRect(x: 200, y: 220, width: 80, height: 70)), with: .color(.white), lineWidth: 6)
+    let door = BackyardSpot.doorX
+    ctx.fill(rect(door - 50, 330, 100, 192), with: .color(Color(red: 0.3, green: 0.4, blue: 0.55)))
+    ctx.fill(rect(door - 34, 348, 68, 50), with: .color(Color(red: 0.75, green: 0.88, blue: 1).opacity(0.8)))
+    ctx.fill(oval(CGPoint(x: door + 34, y: 430), 5), with: .color(.yellow))
+    ctx.fill(rect(door - 70, 522, 140, 18), with: .color(Color(white: 0.6)))
+    ctx.fill(rect(door - 85, 540, 170, 14), with: .color(Color(white: 0.5)))
+    // A tree and a swing set.
+    ctx.fill(rect(445, 330, 18, 140), with: .color(Color(red: 0.4, green: 0.25, blue: 0.12)))
+    ctx.fill(oval(CGPoint(x: 454, y: 310), 60), with: .color(Color(red: 0.18, green: 0.5, blue: 0.22)))
+    ctx.stroke(Path { p in p.move(to: CGPoint(x: 900, y: 540)); p.addLine(to: CGPoint(x: 930, y: 420)); p.addLine(to: CGPoint(x: 960, y: 540))
+        p.move(to: CGPoint(x: 930, y: 420)); p.addLine(to: CGPoint(x: 1010, y: 420)) }, with: .color(Color(white: 0.55)), lineWidth: 6)
 }

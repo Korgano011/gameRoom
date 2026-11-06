@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Red Dog, Three Card Poker and Let It Ride at the salon's card table, banked by the Princess for real money.
+/// Red Dog, Three Card Poker, Let It Ride, Mississippi Stud and Crazy 4 Poker at the salon's card table, banked by the Princess for real money.
 /// They share seats, the house, departures at $0 or $100, last call and revenue; `game` picks which hand is dealt.
 /// You can choose to be the house instead: you bank the table, and the Princess plays a seat.
 @Observable final class BankedTable {
@@ -18,7 +18,7 @@ import SwiftUI
         var cards: [Card] = []
         /// Everything this player has riding on the current hand.
         var bets: [Int] = []
-        /// Three Card Poker's optional Pair Plus side bet.
+        /// The optional side bet: Three Card Poker's Pair Plus, or Crazy 4 Poker's Queens Up.
         var pairPlus = 0
         var folded = false
         var seated = true
@@ -44,20 +44,23 @@ import SwiftUI
     var humanBet = 5
     /// The question in front of you right now ("Raise?", "Let it ride?").
     var choice: (yes: String, no: String)?
+    /// A pick of several buttons right now (Mississippi Stud: Fold / 1× / 2× / 3×).
+    var options: [String]?
 
     // Red Dog: the two cards everyone plays, then the third.
     var shared: [Card] = []
     var spread: Int?
-    // Three Card Poker: the house's three cards, and your Pair Plus switch.
+    // Three Card Poker / Crazy 4 Poker: the house's cards, and your Pair Plus / Queens Up switch.
     var dealerCards: [Card] = []
     var dealerShown = false
     var humanPairPlus = false
-    // Let It Ride: the two community cards.
+    // Let It Ride: the two community cards; Mississippi Stud: three.
     var community: [Card] = []
     var communityShown = 0
 
     private var betCont: CheckedContinuation<Void, Never>?
     private var choiceCont: CheckedContinuation<Bool, Never>?
+    private var pickCont: CheckedContinuation<Int, Never>?
     private var roleCont: CheckedContinuation<Bool, Never>?
     let sound: Sound
     let pace: Double
@@ -81,6 +84,7 @@ import SwiftUI
     var dealerName: String { youAreHouse ? "Lavender" : "The Princess" }
     var humanToBet: Bool { betCont != nil }
     var humanToChoose: Bool { choiceCont != nil }
+    var humanToPick: Bool { pickCont != nil }
     var watching: Bool { !youAreHouse && human.stack <= 0 && human.bets.isEmpty && !choosingRole }
     private var newcomers: [Int] { players.indices.filter { !players[$0].isHuman && !players[$0].isPrincess && players[$0].seated } }
     /// Everyone betting this hand (not the house), in seat order.
@@ -107,10 +111,18 @@ import SwiftUI
         c.resume(returning: yes)
     }
 
+    func pick(_ k: Int) {
+        guard let c = pickCont else { return }
+        pickCont = nil
+        options = nil
+        c.resume(returning: k)
+    }
+
     func abandon() {
         if let c = roleCont { roleCont = nil; c.resume(returning: false) }
         if let c = betCont { betCont = nil; c.resume() }
         if let c = choiceCont { choiceCont = nil; choice = nil; c.resume(returning: false) }
+        if let c = pickCont { pickCont = nil; options = nil; c.resume(returning: 0) }
     }
 
     // MARK: Flow
@@ -144,6 +156,8 @@ import SwiftUI
             switch game {
             case .threeCard: await playThreeCard()
             case .letItRide: await playLetItRide()
+            case .mississippiStud: await playMississippiStud()
+            case .crazy4: await playCrazy4()
             default: await playRedDog()
             }
             await checkDepartures()
@@ -171,6 +185,13 @@ import SwiftUI
         message = prompt
         choice = (yes, no)
         return await withCheckedContinuation { choiceCont = $0 }
+    }
+
+    /// Asks you to pick one of several buttons; returns its index.
+    private func humanPicks(_ prompt: String, _ labels: [String]) async -> Int {
+        message = prompt
+        options = labels
+        return await withCheckedContinuation { pickCont = $0 }
     }
 
     /// A newcomer's opening bet: $5, sometimes $10 for the bold ones.
@@ -580,6 +601,336 @@ extension BankedTable {
     }
 }
 
+// MARK: - Mississippi Stud
+
+enum MississippiStud {
+    /// What the five-card hand pays per dollar bet (0 = push on 6s–10s, -1 = loses).
+    static func pays(_ c: [Card]) -> (Int, String) {
+        let s = HandEval.score5(c)
+        let top = (s / 50625) % 15
+        switch s / 759375 {
+        case 8: return top == 14 ? (500, "Royal Flush") : (100, "Straight Flush")
+        case 7: return (40, "Four of a Kind")
+        case 6: return (10, "Full House")
+        case 5: return (6, "Flush")
+        case 4: return (4, "Straight")
+        case 3: return (3, "Three of a Kind")
+        case 2: return (2, "Two Pair")
+        case 1:
+            let pair = "Pair of \(Card(rank: top, suit: .clubs).rankText)s"
+            return top >= 11 ? (1, pair) : top >= 6 ? (0, pair) : (-1, "Low Pair")
+        default: return (-1, "High Card")
+        }
+    }
+
+    /// How many antes a newcomer bets on this street (0 = fold), from the cards she can see.
+    static func streetBet(_ cards: [Card], aggression: Double) -> Int {
+        let counts = Dictionary(grouping: cards, by: \.rank).mapValues(\.count)
+        if counts.values.contains(where: { $0 >= 3 }) { return 3 }
+        if let pair = counts.first(where: { $0.value == 2 })?.key {
+            return pair >= 6 || counts.values.filter({ $0 == 2 }).count == 2 ? 3 : 1
+        }
+        let suited = Dictionary(grouping: cards, by: \.suit).values.map(\.count).max() ?? 0
+        if suited == cards.count && cards.count >= 3 { return 3 }
+        let highs = cards.filter { $0.rank >= 11 }.count
+        let mids = cards.filter { $0.rank >= 6 }.count
+        if highs >= 2 || (cards.count >= 4 && suited == 4) { return Double.random(in: 0..<1) < aggression ? 3 : 1 }
+        if highs >= 1 || mids >= cards.count - (cards.count >= 4 ? 1 : 0) { return 1 }
+        return Double.random(in: 0..<1) < 0.08 * aggression ? 1 : 0
+    }
+}
+
+/// Mississippi Stud: an ante, two cards each and three community cards. Before each community card turns,
+/// fold or bet one to three times the ante. Everything left on the table pays on a pair of Jacks or better;
+/// a pair of 6s through 10s pushes.
+extension BankedTable {
+    fileprivate func playMississippiStud() async {
+        community = []
+        communityShown = 0
+        var deck = Deck.shuffled()
+        for i in bettors {
+            turn = i
+            // The ante plus up to 3× on each of three streets.
+            let cap = max(1, players[i].stack / 10)
+            var ante: Int
+            if players[i].isHuman {
+                if Task.isCancelled { return }
+                ante = await humanBets("Hand \(handNumber). Lavender antes — each street can cost up to three antes more.", max: cap)
+            } else {
+                await wait(0.35)
+                ante = newcomerBet(i, max: cap)
+            }
+            ante = max(1, min(ante, players[i].stack))
+            players[i].stack -= ante
+            players[i].bets = [ante]
+            players[i].note = "Ante $\(ante)"
+            sound.coin()
+        }
+        turn = nil
+        let inHand = players.indices.filter { !players[$0].bets.isEmpty }
+        guard !inHand.isEmpty else { return }
+        for _ in 0..<2 {
+            for i in inHand { players[i].cards.append(deck.removeFirst()) }
+            sound.card()
+            await wait(0.12)
+        }
+        community = [deck.removeFirst(), deck.removeFirst(), deck.removeFirst()]
+
+        let streets = ["3rd street", "4th street", "5th street"]
+        for street in 0..<3 {
+            for i in inHand where !players[i].folded {
+                turn = i
+                let ante = players[i].bets[0]
+                let affordable = min(3, players[i].stack / ante)
+                let seen = players[i].cards + community.prefix(communityShown)
+                var times: Int
+                if players[i].isHuman {
+                    if Task.isCancelled { return }
+                    let labels = ["Fold"] + (0..<affordable).map { "\($0 + 1)× $\(ante * ($0 + 1))" }
+                    times = await humanPicks("\(streets[street].capitalized): Lavender folds, or bets 1 to 3 antes?", labels)
+                } else {
+                    await wait(0.6)
+                    times = MississippiStud.streetBet(seen, aggression: players[i].aggression)
+                }
+                times = min(times, affordable)
+                if times == 0 {
+                    players[i].folded = true
+                    players[i].note = "Fold"
+                    sayFold(i)
+                } else {
+                    players[i].stack -= ante * times
+                    players[i].bets.append(ante * times)
+                    players[i].note = "Bets \(times)× · $\(players[i].staked)"
+                    sound.coin()
+                }
+            }
+            turn = nil
+            await wait(0.5)
+            communityShown += 1
+            sound.card()
+            message = "Community card: \(community[street].text)"
+            await wait(0.9)
+        }
+        var houseWon = false
+        for i in inHand {
+            let staked = players[i].staked
+            if players[i].folded {
+                settle(i, won: -staked)
+                houseWon = true
+                continue
+            }
+            let (pays, name) = MississippiStud.pays(players[i].cards + community)
+            let win = pays >= 0 ? staked * pays : -staked
+            if win < 0 { houseWon = true }
+            if pays > 2 { sound.chime() }
+            settle(i, won: win)
+            players[i].note = win > 0 ? "\(name) wins $\(win)" : win == 0 ? "\(name) · Push" : "Loses $\(staked)"
+        }
+        if houseWon { winners.insert(house) }
+        message = "Pays on Jacks or better · 6s–10s push."
+        sound.coin()
+        await wait(3.0)
+    }
+}
+
+// MARK: - Crazy 4 Poker
+
+enum Crazy4 {
+    static let names = ["High Card", "Pair", "Two Pair", "Straight", "Flush", "Three of a Kind", "Straight Flush", "Four of a Kind"]
+
+    /// A comparable score for four cards (bigger wins). Four of a kind beats a straight flush; A-2-3-4 is the low straight.
+    static func score4(_ c: [Card]) -> Int {
+        var counts = [Int](repeating: 0, count: 15)
+        for card in c { counts[card.rank] += 1 }
+        let flush = c.allSatisfy { $0.suit == c[0].suit }
+        let order = (2...14).filter { counts[$0] > 0 }.sorted {
+            counts[$0] != counts[$1] ? counts[$0] > counts[$1] : $0 > $1
+        }
+        var straightHigh = 0
+        if order.count == 4 {
+            if order.max()! - order.min()! == 3 { straightHigh = order.max()! }
+            if Set(order) == [14, 2, 3, 4] { straightHigh = 4 }
+        }
+        let cat: Int
+        var tiebreak = order
+        if counts[order[0]] == 4 { cat = 7 }
+        else if straightHigh > 0 && flush { cat = 6; tiebreak = [straightHigh] }
+        else if counts[order[0]] == 3 { cat = 5 }
+        else if flush { cat = 4 }
+        else if straightHigh > 0 { cat = 3; tiebreak = [straightHigh] }
+        else if counts[order[0]] == 2 && order.count == 2 { cat = 2 }
+        else if counts[order[0]] == 2 { cat = 1 }
+        else { cat = 0 }
+        var s = cat
+        for i in 0..<4 { s = s * 15 + (i < tiebreak.count ? tiebreak[i] : 0) }
+        return s
+    }
+
+    /// The best four cards out of five.
+    static func best(_ five: [Card]) -> Int {
+        five.indices.map { k in score4(five.enumerated().filter { $0.offset != k }.map(\.element)) }.max() ?? 0
+    }
+
+    static func category(_ score: Int) -> Int { score / 50625 }
+    static func top(_ score: Int) -> Int { (score / 3375) % 15 }
+    static func name(_ score: Int) -> String {
+        let cat = category(score)
+        return cat == 1 ? "Pair of \(Card(rank: top(score), suit: .clubs).rankText)s" : names[cat]
+    }
+    /// The house needs King-high or better.
+    static func qualifies(_ score: Int) -> Bool { category(score) >= 1 || top(score) >= 13 }
+    /// A pair of Aces or better may play up to three times the ante.
+    static func playsTriple(_ score: Int) -> Bool { category(score) >= 2 || (category(score) == 1 && top(score) == 14) }
+
+    /// What the Super Bonus wins on a straight or better (nil = the hand is too small).
+    static func superBonus(_ score: Int, bet: Int) -> Int? {
+        switch category(score) {
+        case 7: top(score) == 14 ? bet * 200 : bet * 30
+        case 6: bet * 15
+        case 5: bet * 2
+        case 4: bet * 3 / 2
+        case 3: bet
+        default: nil
+        }
+    }
+
+    /// The Queens Up side bet, paid on your hand alone (0 = loses).
+    static func queensUp(_ score: Int) -> Int {
+        switch category(score) {
+        case 7: 50
+        case 6: 40
+        case 5: 7
+        case 4: 4
+        case 3: 3
+        case 2: 2
+        case 1: top(score) >= 12 ? 1 : 0
+        default: 0
+        }
+    }
+}
+
+/// Crazy 4 Poker against the house: equal Ante and Super Bonus bets, five cards each, best four count.
+/// Fold, or play once the ante — three times with a pair of Aces or better. The house needs King-high to keep the ante in action;
+/// the Super Bonus pays on a straight or better even if the house wins. The optional Queens Up bet pays on your hand alone.
+extension BankedTable {
+    fileprivate func playCrazy4() async {
+        dealerCards = []
+        dealerShown = false
+        var deck = Deck.shuffled()
+        for i in bettors {
+            turn = i
+            if players[i].stack < 2 {
+                if !players[i].isHuman && !players[i].isPrincess { depart(i, reason: "can't cover the ante and super bonus") }
+                continue
+            }
+            // Ante + Super Bonus + up to 3× to play.
+            let cap = max(1, players[i].stack / 5)
+            var ante: Int
+            var qu = 0
+            if players[i].isHuman {
+                if Task.isCancelled { return }
+                ante = await humanBets("Hand \(handNumber). Lavender antes — the Super Bonus matches it.", max: cap)
+                if humanPairPlus && players[i].stack - ante * 2 >= 5 { qu = 5 }
+            } else {
+                await wait(0.35)
+                ante = newcomerBet(i, max: cap)
+                if players[i].stack - ante * 2 >= 5 && Double.random(in: 0..<1) < 0.25 + 0.3 * players[i].aggression { qu = 5 }
+            }
+            ante = max(1, min(ante, players[i].stack / 2))
+            players[i].stack -= ante * 2 + qu
+            players[i].bets = [ante, ante]
+            players[i].pairPlus = qu
+            players[i].note = "Ante $\(ante) + SB $\(ante)" + (qu > 0 ? " + QU $\(qu)" : "")
+            sound.coin()
+        }
+        turn = nil
+        let inHand = players.indices.filter { !players[$0].bets.isEmpty }
+        guard !inHand.isEmpty else { return }
+        for _ in 0..<5 {
+            for i in inHand { players[i].cards.append(deck.removeFirst()) }
+            dealerCards.append(deck.removeFirst())
+            sound.card()
+            await wait(0.12)
+        }
+        for i in inHand { players[i].cards.sort { $0.rank > $1.rank } }
+
+        for i in inHand {
+            turn = i
+            let ante = players[i].bets[0]
+            let mine = Crazy4.best(players[i].cards)
+            let maxTimes = players[i].stack >= ante * 3 && Crazy4.playsTriple(mine) ? 3 : players[i].stack >= ante ? 1 : 0
+            var times: Int
+            if players[i].isHuman {
+                if Task.isCancelled { return }
+                if maxTimes == 0 {
+                    times = 0
+                } else {
+                    let labels = ["Fold", "Play 1× $\(ante)"] + (maxTimes == 3 ? ["Play 3× $\(ante * 3)"] : [])
+                    times = await humanPicks("Lavender has \(Crazy4.name(mine)). Fold, or play?" + (maxTimes == 3 ? " Aces or better can play 3×!" : ""), labels)
+                    if times == 2 { times = 3 }
+                }
+            } else {
+                await wait(0.6)
+                // Raise big with Aces or better; play King-high or better; once in a while a bold one plays anyway.
+                times = Crazy4.playsTriple(mine) ? (Double.random(in: 0..<1) < 0.5 + 0.5 * players[i].aggression ? 3 : 1)
+                    : Crazy4.qualifies(mine) || Double.random(in: 0..<1) < 0.1 * players[i].aggression ? 1 : 0
+                times = min(times, maxTimes)
+            }
+            if times == 0 {
+                players[i].folded = true
+                players[i].note = "Fold"
+                sayFold(i)
+            } else {
+                players[i].stack -= ante * times
+                players[i].bets.append(ante * times)
+                players[i].note = "Plays \(times)× · $\(ante * times)"
+                sound.coin()
+            }
+        }
+        turn = nil
+        await wait(0.7)
+        dealerShown = true
+        sound.card()
+        let theirs = Crazy4.best(dealerCards)
+        let qualified = Crazy4.qualifies(theirs)
+        message = "\(dealerName) has \(Crazy4.name(theirs))" + (qualified ? " — the house qualifies." : " — the house doesn't qualify (needs King-high). Antes push.")
+        await wait(1.2)
+        var houseWon = false
+        for i in inHand {
+            let ante = players[i].bets[0], sb = players[i].bets[1]
+            let mine = Crazy4.best(players[i].cards)
+            var win = 0
+            if players[i].folded {
+                win -= ante + sb
+            } else {
+                let play = players[i].bets[2]
+                if mine > theirs {
+                    win += play + (qualified ? ante : 0)
+                } else if mine < theirs {
+                    win -= play + (qualified ? ante : 0)
+                    houseWon = true
+                }
+                if let bonus = Crazy4.superBonus(mine, bet: sb) {
+                    win += bonus
+                    sound.chime()
+                } else if mine < theirs {
+                    win -= sb
+                }
+            }
+            let qu = players[i].pairPlus
+            if qu > 0 {
+                let pays = Crazy4.queensUp(mine)
+                win += pays > 0 ? qu * pays : -qu
+            }
+            settle(i, won: win)
+            players[i].note = (players[i].folded ? "" : "\(Crazy4.name(mine)) · ") + (win > 0 ? "Wins $\(win)" : win < 0 ? "Loses $\(-win)" : "Push")
+        }
+        if houseWon { winners.insert(house) }
+        sound.coin()
+        await wait(3.0)
+    }
+}
+
 // MARK: - View
 
 struct BankedView: View {
@@ -660,8 +1011,9 @@ struct BankedView: View {
     /// The newcomers' cards stay face down until the hand is settled.
     private var reveal: Bool {
         switch game {
-        case .threeCard: table.dealerShown
+        case .threeCard, .crazy4: table.dealerShown
         case .letItRide: table.communityShown == 2
+        case .mississippiStud: table.communityShown == 3
         default: true
         }
     }
@@ -681,6 +1033,17 @@ struct BankedView: View {
                     ForEach(0..<2, id: \.self) { k in CardView(card: t.community[safe: k], faceUp: k < t.communityShown, width: w) }
                 }
                 caption("10s+ 1 · 2P 2 · 3K 3 · STR 5 · FL 8 · FH 11 · 4K 50 · SF 200 · RF 1000")
+            case .mississippiStud:
+                HStack(spacing: 6) {
+                    ForEach(0..<3, id: \.self) { k in CardView(card: t.community[safe: k], faceUp: k < t.communityShown, width: w) }
+                }
+                caption("6–10 PUSH · JJ+ 1 · 2P 2 · 3K 3 · STR 4 · FL 6 · FH 10 · 4K 40 · SF 100 · RF 500")
+            case .crazy4:
+                HStack(spacing: 3) {
+                    ForEach(0..<5, id: \.self) { k in CardView(card: t.dealerCards[safe: k], faceUp: t.dealerShown || t.youAreHouse, width: w * 0.85) }
+                }
+                caption("BEST 4 CARDS · HOUSE QUALIFIES WITH KING HIGH · AA+ MAY PLAY 3×")
+                caption("SUPER BONUS STR 1 · FL 3:2 · 3K 2 · SF 15 · 4K 30 · AAAA 200 · QUEENS UP QQ+ 1 · 2P 2 · STR 3 · FL 4 · 3K 7 · SF 40 · 4K 50")
             default:
                 HStack(spacing: 8) {
                     ForEach(0..<3, id: \.self) { k in CardView(card: t.shared[safe: k], width: w) }
@@ -724,8 +1087,8 @@ struct BankedView: View {
             }
         } else if table.humanToBet {
             VStack(spacing: 8) {
-                if game == .threeCard {
-                    Toggle("Pair Plus side bet ($5)", isOn: $table.humanPairPlus)
+                if game == .threeCard || game == .crazy4 {
+                    Toggle(game == .crazy4 ? "Queens Up side bet ($5)" : "Pair Plus side bet ($5)", isOn: $table.humanPairPlus)
                         .font(.system(.subheadline, design: .rounded, weight: .bold))
                         .foregroundStyle(.white)
                         .tint(.pink)
@@ -746,8 +1109,14 @@ struct BankedView: View {
                         .opacity(ok ? 1 : 0.35)
                     }
                 }
-                CasinoButton(title: game == .letItRide ? "Deal — 3 × $\(table.humanBet)" : game == .threeCard ? "Deal — ante $\(table.humanBet)" : "Deal — bet $\(table.humanBet)",
+                CasinoButton(title: game == .letItRide ? "Deal — 3 × $\(table.humanBet)" : game == .crazy4 ? "Deal — ante + bonus $\(table.humanBet * 2)" : game == .threeCard || game == .mississippiStud ? "Deal — ante $\(table.humanBet)" : "Deal — bet $\(table.humanBet)",
                              color: .pink) { table.placeBet() }
+            }
+        } else if let labels = table.options, table.humanToPick {
+            HStack(spacing: 6) {
+                ForEach(Array(labels.enumerated()), id: \.offset) { k, label in
+                    CasinoButton(title: label, color: k == 0 ? .gray : .pink) { table.pick(k) }
+                }
             }
         } else if let c = table.choice, table.humanToChoose {
             HStack(spacing: 8) {

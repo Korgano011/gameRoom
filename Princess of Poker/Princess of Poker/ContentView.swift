@@ -2,8 +2,6 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var director = Director()
-    @State private var showShop = false
-
     var body: some View {
         ZStack {
             switch director.mode {
@@ -93,7 +91,7 @@ struct ContentView: View {
                                    felt: director.save.has(.velvetFelt) ? Color(red: 0.4, green: 0.1, blue: 0.5) : Color(red: 0.05, green: 0.45, blue: 0.2))
                 }
             case .summary:
-                SummaryView(director: director, showShop: $showShop)
+                SummaryView(director: director)
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -108,9 +106,6 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .padding(10)
             }
-        }
-        .sheet(isPresented: $showShop) {
-            ShopView(save: $director.save) { director.buy($0) }
         }
         .preferredColorScheme(.dark)
     }
@@ -213,6 +208,20 @@ private struct StoryView: View {
                     .buttonStyle(.bordered)
                     .tint(.white)
             }
+            if let choice = director.storyChoice {
+                VStack(spacing: 8) {
+                    Text(choice.prompt)
+                        .font(.system(.subheadline, design: .rounded).bold())
+                        .foregroundStyle(.yellow)
+                    HStack {
+                        ForEach(choice.options.indices, id: \.self) { i in
+                            Button(choice.options[i]) { director.choose(i) }
+                                .buttonStyle(.borderedProminent)
+                                .tint(i == 0 ? .blue : .pink)
+                        }
+                    }
+                }
+            }
             if director.skippable {
                 Button("Skip to the machine") { director.skipIntro() }
                     .buttonStyle(.bordered)
@@ -225,14 +234,16 @@ private struct StoryView: View {
 }
 
 private struct SummaryView: View {
-    let director: Director
-    @Binding var showShop: Bool
+    @Bindable var director: Director
+    /// The shop sheet belongs to the summary screen that opens it.
+    @State private var showShop = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
                 if let r = director.nightResult {
-                    Text(director.afternoonPending ? "Day \(r.night) — the morning game is over"
+                    Text(r.rescue ? "Kids to the rescue!"
+                         : director.afternoonPending ? "Day \(r.night) — the morning game is over"
                          : r.night == 1 ? "Day 1 is over" : "Day \(r.night) — both games are over")
                         .font(.system(size: 32, weight: .black, design: .rounded))
                         .foregroundStyle(.yellow)
@@ -245,7 +256,9 @@ private struct SummaryView: View {
                                 VStack(alignment: .leading) {
                                     Text("\(d.name) \(d.reason)")
                                         .font(.system(.headline, design: .rounded))
-                                    Text(r.isForFun
+                                    Text(r.rescue
+                                         ? "Reached game 10 on a home computer. Went home to Mom still a girl, with $\(r.rescueShares[d.wasName] ?? 0) for the family — changed back into \(d.wasName) an hour later."
+                                         : r.isForFun
                                          ? (d.isKid ? "Went home to Mom still a girl — changed back into \(d.wasName) an hour later."
                                                     : "Stepped out of the salon and changed back into \(d.wasName) over 30 seconds.")
                                          : (d.isKid ? "Went home to Mom still a girl, with $\(d.takeaway) — changed back into \(d.wasName) an hour later."
@@ -261,7 +274,13 @@ private struct SummaryView: View {
                         Divider().overlay(.white.opacity(0.3))
                         if r.isForFun {
                             row("You finished \(r.funGame) with", r.funGame == "99" ? "\(r.yourStack) token\(r.yourStack == 1 ? "" : "s")" : "\(r.yourStack) points")
-                            row("Revenue this game", "$0 — just for fun", color: .pink)
+                            if r.rescue {
+                                row("Credits from the kids' computers", "$\(r.rescueCredits)")
+                                row("Kids' quarter, taken home", "-$\(r.rescueKidsShare)", color: .orange)
+                                row("Into the cash box", "$\(r.rescueCredits - r.rescueKidsShare)", color: .green)
+                            } else {
+                                row("Revenue this game", "$0 — just for fun", color: .pink)
+                            }
                         } else {
                             row("You finished with", "$\(r.yourStack)")
                             row("You won", money(r.yourWinnings), color: r.yourWinnings >= 0 ? .green : .red)
@@ -311,6 +330,10 @@ private struct SummaryView: View {
             .padding()
         }
         .background(LinearGradient(colors: [Color(red: 0.3, green: 0.05, blue: 0.3), .black], startPoint: .top, endPoint: .bottom).ignoresSafeArea())
+        .sheet(isPresented: $showShop) {
+            ShopView(save: $director.save) { director.buy($0) }
+                .preferredColorScheme(.dark)
+        }
     }
 
     private func money(_ v: Int) -> String { (v < 0 ? "-$" : "$") + "\(abs(v))" }

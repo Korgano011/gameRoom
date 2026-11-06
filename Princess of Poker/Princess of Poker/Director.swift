@@ -7,7 +7,13 @@ struct NightResult {
     let yourWinnings: Int
     let princessWinnings: Int
     let yourStack: Int
-    let errandNext: Bool
+    var errandNext: Bool
+    /// The cash box went below zero and kids who reached game 10 on their computers played this game.
+    var rescue = false
+    /// Rescue: credits the kids brought in, the quarter they take home, and each kid's share by his old name.
+    var rescueCredits = 0
+    var rescueKidsShare = 0
+    var rescueShares: [String: Int] = [:]
     /// A hearts, nines, pedro or pişti night: played just for fun, so no money changes hands.
     var isForFun = false
     /// "hearts", "nines", "pedro" or "pişti" on a for-fun night.
@@ -106,12 +112,26 @@ struct NightResult {
     private var clockBase = 21.0 * 60
     private var clockT0: Date?
     private var clockRate = 0.0
+    /// The kid got home after a morning game: sunshine in the window, late-morning clock.
+    private(set) var homeDaytime = false
+    /// The downloaded Princess of Poker game on a kid's computer screen.
+    var kidScreen = KidScreen()
+    /// The kids' game after the cash box went below zero is under way.
+    private var rescuing = false
+    /// Each rescued kid's quarter of the profit, by his old name, for him to bring home to his parents.
+    private var rescueShares: [String: Int] = [:]
+    private var rescueCredits = 0
 
     func clockMinutes(at now: Date) -> Double {
         clockBase + (clockT0.map { now.timeIntervalSince($0) } ?? 0) * clockRate
     }
 
     func fastForward() { fastForwardAsked = true }
+
+    struct StoryChoice { let prompt: String; let options: [String] }
+    /// A decision the player makes during a story scene (shown as buttons under the stage).
+    private(set) var storyChoice: StoryChoice?
+    private var storyChoiceAnswer: Int?
 
     private var scrollBase = 0.0
     private var scrollT0: Date?
@@ -146,9 +166,10 @@ struct NightResult {
     private static let manNames: [(String, String)] = [("Mike", "Michelle"), ("Dan", "Danielle"), ("Joe", "Josephine"), ("Tony", "Toni"),
                                                        ("Chris", "Christina"), ("Bobby", "Roberta"), ("Frank", "Frances"), ("Pat", "Patricia"),
                                                        ("Steve", "Stephanie"), ("Paul", "Paula"), ("Eric", "Erica"), ("Carl", "Carla"),
-                                                       ("Ken", "Kendra"), ("Ron", "Veronica"), ("Gary", "Gabby"), ("Nick", "Nicole")]
+                                                       ("Ken", "Kendra"), ("Ron", "Veronica"), ("Gary", "Gabby"), ("Nick", "Nicole"),
+                                                       ("Elmer", "Ellie")]
     private static let boyNames: [(String, String)] = [("Tommy", "Tammy"), ("Billy", "Billie"), ("Danny", "Dani"), ("Joey", "Jo"),
-                                                       ("Andy", "Andrea"), ("Sam", "Samantha"), ("Alex", "Alexa"), ("Charlie", "Charlotte")]
+                                                       ("Andy", "Andrea"), ("Sam", "Samantha"), ("Alex", "Alexa"), ("Charlie", "Charlotte"), ("Elmer", "Ellie")]
     private static let shirts: [Color] = [.blue, .green, .orange, .teal, .indigo, .brown, Color(red: 0.5, green: 0.5, blue: 0.55), .cyan, .mint]
     private static let pants: [Color] = [Color(red: 0.2, green: 0.25, blue: 0.45), Color(red: 0.25, green: 0.25, blue: 0.25),
                                          Color(red: 0.76, green: 0.66, blue: 0.48), Color(red: 0.35, green: 0.3, blue: 0.25)]
@@ -263,6 +284,7 @@ struct NightResult {
         casinoSecondGirl = false
         lightsOut = 0
         canFastForward = false
+        storyChoice = nil
         pushingCarts = 0
         corralCarts = 0
         machineOnUntil = .distantPast
@@ -657,7 +679,11 @@ struct NightResult {
     func continueSalon() {
         sound.prepare()
         you = Self.makeYou(girl: true)
-        run { [weak self] in try await self?.nextSession() }
+        run { [weak self] in
+            guard let self else { return }
+            if self.save.cash < 0 { try await self.cashBoxRescue(); return }
+            try await self.nextSession()
+        }
     }
 
     func nextNight() {
@@ -666,6 +692,8 @@ struct NightResult {
         run { [weak self] in
             guard let self else { return }
             if errand { try await self.errand() }
+            // The cash box is in the hole: the Princess's game goes out to kids' computers first.
+            if self.save.cash < 0 { try await self.cashBoxRescue(); return }
             try await self.nextSession()
         }
     }
@@ -1062,15 +1090,19 @@ struct NightResult {
 
     /// A boy goes home to his mother still a girl. An hour later the change wears off over 30 seconds.
     private func kidGoesHome(_ kid: Person) async throws {
+        if let share = rescueShares.removeValue(forKey: kid.wasName) {
+            try await rescueKidHome(kid, share: share)
+            return
+        }
         clearScene()
         mode = .story
         place = .home
-        clockBase = 21 * 60
+        // After a morning game he's home before lunch; after an afternoon game it's evening.
+        homeDaytime = session == .morning
+        let arrive = homeDaytime ? 11.5 * 60 : 21.0 * 60
+        clockBase = arrive
         clockT0 = nil
-        let mom = Person("Mom", height: 194, skin: kid.skin, guy: GuyLook(hair: .brown, shirt: .gray, pants: .gray),
-                         girl: GirlLook(hair: Self.naturalHair.randomElement()!, lips: Color(red: 0.8, green: 0.1, blue: 0.2),
-                                        dress: Color(red: 0.2, green: 0.45, blue: 0.75), dressHi: Color(red: 0.6, green: 0.8, blue: 1)),
-                         isGirl: true, x: 700)
+        let mom = makeMom(for: kid, x: 700)
         kid.visible = true
         kid.opacity = 1
         kid.strapped = false
@@ -1085,13 +1117,13 @@ struct NightResult {
         mom.handsToFace = true
         try await talk(mom, "Aaah! Who are you?! Where is my son?", .girl)
         try await talk(kid, "Mom, it's me, \(kid.wasName)! The Princess of Poker turned me into a girl!", .kidGirl)
-        try await talk(mom, "You smell of perfume.", .girl)
+        try await talk(mom, "You smell like a girl.", .girl)
         try await talk(mom, "Oh no! My baby! What did they do to you?", .girl)
         mom.handsToFace = false
         mom.mood = .worried
         caption = "One hour later…"
         try await wait(2.4)
-        clockBase = 22 * 60
+        clockBase = arrive + 60
         caption = "…the transformation starts to disappear!"
         sound.chime()
         kid.mood = .shocked
@@ -1116,7 +1148,7 @@ struct NightResult {
                 kid.change(toGirl: false, over: 4)
                 clockBase = clockMinutes(at: .now)
                 clockT0 = .now
-                clockRate = max(0, 22 * 60 + 5 - clockBase) / 4
+                clockRate = max(0, arrive + 65 - clockBase) / 4
             }
             if !zoomedOut && (elapsed > 12 || !canFastForward) {
                 zoomedOut = true
@@ -1132,7 +1164,7 @@ struct NightResult {
             try await wait(0.25)
         }
         canFastForward = false
-        clockBase = 22 * 60 + 5
+        clockBase = arrive + 65
         clockT0 = nil
         kid.name = kid.wasName
         kid.mood = .happy
@@ -1144,6 +1176,183 @@ struct NightResult {
         try await talk(mom, "Now go take a shower and wash that perfume off.", .girl)
         try await wait(1)
     }
+
+    private func makeMom(for kid: Person, x: Double) -> Person {
+        Person("Mom", height: 194, skin: kid.skin, guy: GuyLook(hair: .brown, shirt: .gray, pants: .gray),
+               girl: GirlLook(hair: Self.naturalHair.randomElement()!, lips: Color(red: 0.8, green: 0.1, blue: 0.2),
+                              dress: Color(red: 0.2, green: 0.45, blue: 0.75), dressHi: Color(red: 0.6, green: 0.8, blue: 1)),
+               isGirl: true, x: x)
+    }
+
+    /// Lean in from the right and kiss `p` on the cheek, then step back to `home`.
+    private func kissCheek(_ kisser: Person, _ p: Person, back home: Double) async throws {
+        let stance = kisser.kissStance(for: p.cheek(at: .now))
+        kisser.walk(to: stance.x, speed: 120)
+        try await wait(max(0.4, kisser.moveDur))
+        shoot(p.face(at: .now), zoom: 2.6, over: 0.6)
+        try await wait(0.7)
+        kisser.lean(to: stance.angle, over: 0.7)
+        kisser.float(to: stance.rise, over: 0.7)
+        try await wait(0.8)
+        p.kissMark = kisser.girl.lips
+        p.mood = .shocked
+        sound.chime()
+        try await wait(1.1)
+        kisser.lean(to: 0, over: 0.6)
+        kisser.float(to: 0, over: 0.6)
+        try await wait(0.9)
+        p.mood = .happy
+        shoot(CGPoint(x: Stage.W / 2, y: Stage.H / 2), zoom: 1, over: 0.6)
+        kisser.walk(to: home, speed: 120)
+        try await wait(max(0.6, kisser.moveDur))
+    }
+
+    /// After the cash box rescue the salon brings the kid home: Mom watches it land in her backyard, the Princess,
+    /// Lavender and her kid step out, the Princess explains and hands over his quarter, then the kid decides
+    /// whether to be changed back or stay a girl.
+    private func rescueKidHome(_ kid: Person, share: Int) async throws {
+        clearScene()
+        mode = .story
+        place = .backyard
+        let mom = makeMom(for: kid, x: BackyardSpot.doorX + 70)
+        mom.mood = .worried
+        let shipX = BackyardSpot.shipX
+        for p in [kid, you, princess] {
+            p.visible = false
+            p.opacity = 1
+            p.strapped = false
+            p.seated = false
+            p.mood = .happy
+            p.place(height: 0)
+            p.place(x: shipX)
+        }
+        princess.reachTo = nil
+        people = [mom, kid, you, princess]
+        caption = "\(kid.wasName)'s mom steps into the backyard, looking for her son…"
+        try await talk(mom, "\(kid.wasName)! Where are you? Time to come in!", .girl)
+
+        sound.hum(true)
+        ship = SalonShip(x: shipX, y0: -320, y1: -320)
+        shipScale = 0.85
+        shipShown = true
+        ship.move(to: Stage.ground, over: 3.5)
+        caption = "A humming sound… and a flying beauty salon comes down out of the sky!"
+        try await wait(1.4)
+        mom.mood = .shocked
+        mom.handsToFace = true
+        try await talk(mom, "What on earth?!", .girl)
+        try await wait(0.8)
+        ship.flying = false
+        sound.hum(false)
+        sound.clunk()
+        caption = "The flying salon lands right in her yard!"
+        try await wait(1.4)
+        ship.doorOpen = true
+        try await wait(0.5)
+        caption = "Out step the Princess of Poker, Lavender… and a little girl."
+        princess.visible = true
+        princess.walk(to: 570, speed: 100)
+        try await wait(0.8)
+        you.visible = true
+        you.walk(to: 480, speed: 100)
+        try await wait(0.8)
+        kid.visible = true
+        kid.walk(to: 390, speed: 100)
+        try await wait(max(1.2, kid.moveDur))
+        ship.doorOpen = false
+
+        mom.handsToFace = false
+        try await talk(mom, "Who are you people? And where is my son?", .girl)
+        try await talk(kid, "Mom, it's me, \(kid.wasName)!", .kidGirl)
+        mom.handsToFace = true
+        try await talk(mom, "\(kid.wasName)?!", .girl)
+        caption = "The Princess explains everything."
+        try await talk(princess, "Don't be frightened. I'm the Princess of Poker, and this is Lavender.", .princess)
+        try await talk(princess, "My salon's cash box fell below zero, so I sent my game to kids' computers to help out.", .princess)
+        try await talk(princess, "\(kid.wasName) made it all the way to game ten. My salon picked him up right here in your backyard…", .princess)
+        try await talk(princess, "…and my machine turned him into a girl. While she's a girl, her name is \(kid.girlName).", .princess)
+        try await talk(you, "Then we all played cards together. \(kid.girlName) was a natural!", .girl)
+        try await talk(princess, "The credits \(kid.girlName) had left helped put my cash box back in the black.", .princess)
+        mom.handsToFace = false
+        mom.mood = .worried
+        try await talk(mom, "You smell like a girl.", .girl)
+        try await talk(kid, "That's the Princess's perfume, Mom!", .kidGirl)
+        if share > 0 {
+            sound.coin()
+            caption = "\(kid.name) brings home $\(share) — a quarter of the profit."
+            try await talk(princess, "And a quarter of the profit belongs to \(kid.girlName): \(share) dollars for you and Dad.", .princess)
+            try await talk(mom, "\(share) dollars?! Well… that will come in handy.", .girl)
+        }
+        try await talk(princess, "Now it's up to you, honey. I can change you back into a boy, or you can stay a girl.", .princess)
+        try await talk(mom, "It's your decision, sweetheart.", .girl)
+
+        let staysGirl = try await ask("What does \(kid.girlName) decide?",
+                                      ["Change back into \(kid.wasName)", "Stay a girl"]) == 1
+        if staysGirl {
+            mom.mood = .happy
+            kid.mood = .happy
+            try await talk(kid, "I want to stay a girl, Mom!", .kidGirl)
+            try await talk(mom, "Well… if it makes you happy, \(kid.girlName), then it makes me happy.", .girl)
+            try await talk(princess, "Welcome to the family, \(kid.girlName).", .princess)
+            caption = "\(kid.girlName) stays a girl."
+        } else {
+            try await talk(kid, "Please change me back, Princess.", .kidGirl)
+            try await talk(princess, "Of course, honey. Hold still.", .princess)
+            caption = "The Princess changes \(kid.girlName) back…"
+            sound.chime()
+            kid.mood = .shocked
+            kid.change(toGirl: false, over: 10)
+            shoot(kid.face(at: .now), zoom: 3.2, over: 1.2)
+            try await talkOver(10, [(kid, "My face feels funny!", .kidGirl), (mom, "Your hair… it's going back!", .girl),
+                                     (kid, "My feet are tingling!", .boy)])
+            while kid.girlness(at: .now) > 0 { try await wait(0.2) }
+            shoot(CGPoint(x: Stage.W / 2, y: Stage.H / 2), zoom: 1, over: 1)
+            kid.name = kid.wasName
+            kid.mood = .happy
+            mom.mood = .happy
+            sound.chime()
+            caption = "\(kid.wasName) is a boy again!"
+            try await talk(kid, "I'm me again!", .boy)
+            try await talk(mom, "Oh, thank goodness! My little boy is back!", .girl)
+            try await talk(princess, "Before we go, a little goodbye kiss.", .princess)
+            caption = "The Princess and Lavender each give \(kid.wasName) a kiss on the cheek."
+            try await kissCheek(princess, kid, back: 570)
+            try await kissCheek(you, kid, back: 480)
+            try await talk(kid, "Wow… thanks!", .boy)
+            try await talk(mom, "Now go take a shower and wash that perfume off.", .girl)
+        }
+
+        try await talk(princess, "Goodbye, everybody!", .princess)
+        ship.doorOpen = true
+        princess.walk(to: shipX, speed: 120)
+        you.walk(to: shipX, speed: 120)
+        try await wait(max(1.2, princess.moveDur))
+        princess.visible = false
+        you.visible = false
+        ship.doorOpen = false
+        sound.clunk()
+        try await wait(0.6)
+        ship.flying = true
+        sound.hum(true)
+        ship.move(to: -320, over: 2.4)
+        caption = "Up and away!"
+        try await wait(2.5)
+        sound.hum(false)
+        shipShown = false
+        caption = staysGirl ? "\(kid.girlName) and Mom wave goodbye." : "\(kid.wasName) and Mom wave goodbye."
+        try await wait(1.6)
+    }
+
+    /// Wait for the player to pick one of the options shown under the stage.
+    private func ask(_ prompt: String, _ options: [String]) async throws -> Int {
+        storyChoiceAnswer = nil
+        storyChoice = StoryChoice(prompt: prompt, options: options)
+        while storyChoiceAnswer == nil { try await wait(0.2) }
+        storyChoice = nil
+        return storyChoiceAnswer ?? 0
+    }
+
+    func choose(_ i: Int) { storyChoiceAnswer = i }
 
     private func adjustment(_ newcomers: [Person]) async throws {
         clearScene()
@@ -1178,31 +1387,49 @@ struct NightResult {
             if p.isKid { boysSay = pool } else { menSay = pool }
             try await talk(p, line, voice(for: p))
         }
+        if rescuing { try await rescuePayout(newcomers) }
         try await pressButton()
-        machineOnUntil = .now + 18.2
+        // Each of them reacts three times: as it starts at the feet, in the middle, and as it reaches the face.
+        // The change runs long enough for every newcomer to get a word in at each stage.
+        let n = Double(newcomers.count)
+        let body = 3.2 + 5 * n, face = max(10, 3.4 + 2.9 * n)
+        machineOnUntil = .now + body + face + 0.8
         sound.zap(true)
-        for p in newcomers { p.changeToGirl(body: 7.4, face: 10) }
+        for p in newcomers { p.changeToGirl(body: body, face: face) }
         caption = "Starting with the feet, the machine turns " + (newcomers.count == 1 ? "him into a girl…" : "them into girls…")
         for p in newcomers { p.mood = .shocked }
         let zapStart = Date.now
         try await talk(princess, "Surprise!", .princess)
-        try await wait(max(0.5, 5 - Date.now.timeIntervalSince(zapStart)))
+        func pick(_ men: [String], _ boys: [String]) -> [(Person, String, Voice)] {
+            var men = men.shuffled(), boys = boys.shuffled()
+            return newcomers.map { p in (p, p.isKid ? boys.removeFirst() : men.removeFirst(), p.isKid ? Voice.boy : .guy) }
+        }
+        let starts = pick(["Hey! What's that humming?", "Whoa! My feet are tingling!", "What's going on down there?!",
+                           "Hey! My shoes are changing!", "What did you just do?!", "Something's crawling up my legs!"],
+                          ["Whoa! My feet feel funny!", "Hey! My sneakers are changing!", "What's that buzzing?!", "It tickles!"])
+        let middles = pick(["Is this a dress?! Where are my pants?!", "Are those… high heels?!", "My legs are all smooth!",
+                            "Why am I sparkling?!", "Somebody call my wife!", "This is not the surprise I wanted!"],
+                           ["Hey! I'm wearing a dress!", "Mom's gonna kill me!", "It's all sparkly!", "Are those girl shoes?!"])
+        try await talkOver(body * 0.5 - Date.now.timeIntervalSince(zapStart), starts)
         caption = "…sparkling dresses, then thick curly hair and lipstick…"
-        try await wait(2)
+        for p in newcomers { p.mood = .scared }
+        try await talkOver(body - Date.now.timeIntervalSince(zapStart), middles)
         // Close-up on the faces as they morph from guy to girl.
+        for p in newcomers { p.mood = .shocked }
         let faces = newcomers.map { $0.face(at: .now) }
         let midX = (faces.map(\.x).min()! + faces.map(\.x).max()!) / 2
         let midY = faces.map(\.y).reduce(0, +) / Double(faces.count)
         let spread = faces.map(\.x).max()! - faces.map(\.x).min()!
         shoot(CGPoint(x: midX, y: midY), zoom: min(3.6, Stage.W / (spread + 260)), over: 0.8)
-        let first = newcomers[0], second = newcomers.count > 1 ? newcomers[1] : newcomers[0]
-        try await talkOver(10.9, [
-            (first, first.isKid ? "My face feels all tingly!" : "Hey! What's happening to my face?!", first.isKid ? .boy : .guy),
-            (princess, "Don't fight it, girls. Every girl at my table needs a pretty face.", .princess),
-            (second, second.isKid ? "I'm growing curls!" : "My hair… it's all curly!", voice(for: second)),
-            (first, "Is that… lipstick?!", voice(for: first))])
+        var faceLines = pick(["Hey! What's happening to my face?!", "My hair… it's all curly!", "Is that… lipstick?!",
+                              "My eyelashes are getting longer!", "My face feels so soft!"],
+                             ["My face feels all tingly!", "I'm growing curls!", "Is that lipstick?!"])
+            .map { ($0.0, $0.1, voice(for: $0.0)) }
+        faceLines.insert((princess, "Don't fight it, girls. Every girl at my table needs a pretty face.", .princess), at: 1)
+        try await talkOver(face + 0.9, faceLines)
         sound.zap(false)
         sound.chime()
+        for p in newcomers { p.mood = .shocked }
         try await wait(0.6)
         shoot(CGPoint(x: Stage.W / 2, y: Stage.H / 2), zoom: 1, over: 1)
         try await wait(1)
@@ -1236,7 +1463,9 @@ struct NightResult {
             var line = pool.remove(at: Int.random(in: 0..<pool.count))
             if line == "Look at all this hair!" { line = "Look at all this \(p.hairName) hair!" }
             if p.isKid { kidSees = pool } else { manSees = pool }
+            p.handsToFace = true
             try await talk(p, line, voice(for: p))
+            p.handsToFace = false
             p.mood = .happy
         }
         try await wait(0.6)
@@ -1265,12 +1494,20 @@ struct NightResult {
         try await wait(0.4)
         sprays = []
         for p in newcomers { p.mood = .happy }
-        let sniffer = newcomers.randomElement()!
-        try await talk(sniffer, "Mmm, I smell so pretty!", voice(for: sniffer))
+        if rescuing {
+            // The kids from the computers each take a sniff.
+            for p in newcomers { try await talk(p, "Ooh, I smell like a girl.", voice(for: p)) }
+        } else {
+            let sniffer = newcomers.randomElement()!
+            try await talk(sniffer, "Ooh, I smell like a girl.", voice(for: sniffer))
+        }
         caption = ""
         try await talk(princess, tonightGame.isForFun
                        ? "Now, to the card room, girls! \(save.night == 1 ? "Tonight" : "This \(session.name)")'s game is \(tonightGame.name.lowercased()) — just for fun, no money on the table."
                        : "Now, to the \(tonightGame == .blackjack || tonightGame == .redDog ? "card" : tonightGame == .craps ? "dice" : "poker") room, girls! This \(session.name)'s game is \(tonightGame.name). Every buy-in is fifty dollars.", .princess)
+        if rescuing && newcomers.count == 3 {
+            try await talk(princess, "Three of you and Lavender make four. I'll sit this one out and watch.", .princess)
+        }
         try await wait(0.8)
         startTable(newcomers)
     }
@@ -1320,7 +1557,7 @@ struct NightResult {
             startCraps(newcomers)
             return
         }
-        if [.threeCard, .letItRide, .redDog].contains(tonightGame) {
+        if [.threeCard, .letItRide, .redDog, .mississippiStud, .crazy4].contains(tonightGame) {
             startBanked(newcomers)
             return
         }
@@ -1351,7 +1588,9 @@ struct NightResult {
         }
         var players = [HeartsTable.Player(id: 0, name: "Lavender", wasName: "Larry", skin: you.skin, look: you.girl, isHuman: true)]
         players.append(seat(1, newcomers[0]))
-        players.append(HeartsTable.Player(id: 2, name: "Princess", wasName: "Princess", skin: princess.skin, look: princess.girl, isPrincess: true))
+        // Three rescued kids: the third takes the Princess's seat while she watches.
+        players.append(newcomers.count > 2 ? seat(2, newcomers[2])
+                       : HeartsTable.Player(id: 2, name: "Princess", wasName: "Princess", skin: princess.skin, look: princess.girl, isPrincess: true))
         players.append(seat(3, newcomers.count > 1 ? newcomers[1] : newcomers[0]))
         let h = HeartsTable(players: players, sound: sound, pace: save.has(.shuffler) ? 1.6 : 1)
         h.onFinished = { [weak self] in self?.finishHearts() }
@@ -1726,6 +1965,22 @@ struct NightResult {
     }
 
     private func afterTable(_ departures: [HoldemTable.Departure]) {
+        if rescuing {
+            // The rescue game doesn't use up a session: the kids go home to their parents, then back to the summary.
+            rescuing = false
+            nightResult?.errandNext = false
+            nightResult?.rescue = true
+            nightResult?.rescueCredits = rescueCredits
+            nightResult?.rescueShares = rescueShares
+            nightResult?.rescueKidsShare = rescueShares.values.reduce(0, +)
+            let kids = departures.compactMap { d in tonight.first { $0.wasName == d.wasName } }
+            run { [weak self] in
+                for k in kids { try await self?.kidGoesHome(k) }
+                self?.rescueShares = [:]
+                self?.mode = .summary
+            }
+            return
+        }
         // Boys go home to their moms, still girls, before the night's summary.
         let kids = departures.filter(\.isKid).compactMap { d in tonight.first { $0.wasName == d.wasName } }
         // Grown-ups step outside and change back over 30 seconds.
@@ -1805,6 +2060,205 @@ struct NightResult {
             try await wait(0.08)
         }
         try await wait(2.2)
+    }
+
+    // MARK: Cash box rescue
+
+    /// The cash box went below zero: the Princess of Poker game downloads to kids' computers. Every kid who reaches
+    /// game 10 has the salon land in his backyard and pull him in. The deeper the hole, the more kids it takes
+    /// (one per $100, up to the three salon chairs). Their leftover credits go to the house, a quarter of it theirs
+    /// to bring home, and then they play a just-for-fun game with Lavender.
+    private func cashBoxRescue() async throws {
+        let deficit = -save.cash
+        let needed = min(SalonSpot.chairX.count, max(1, Int((Double(deficit) / 100).rounded(.up))))
+        homeDaytime = afternoonPending
+        clearScene()
+        mode = .story
+        place = .salon
+        for p in [you, princess] {
+            p.visible = true
+            p.opacity = 1
+            p.strapped = false
+            p.reachTo = nil
+            p.place(height: 0)
+        }
+        you.mood = .worried
+        princess.mood = .worried
+        you.place(x: 420)
+        princess.place(x: 640)
+        people = [you, princess]
+        caption = "The salon's cash box is $\(deficit) in the hole…"
+        try await wait(1.6)
+        try await talk(princess, "Honey, our cash box is \(deficit) dollars in the hole.", .princess)
+        try await talk(you, "Oh no! What are we going to do?", .girl)
+        princess.mood = .happy
+        try await talk(princess, "We send my casino game out to the kids' computers. Anyone who reaches game 10 comes to us.", .princess)
+        try await talk(princess, needed == 1 ? "One player who makes it should get us out of the hole."
+                                               : "We'll need \(needed) players who make it to get us out of the hole.", .princess)
+        you.mood = .happy
+        caption = "The Princess of Poker downloads onto kids' computers all over town…"
+        for _ in 0..<3 {
+            sound.beep()
+            try await wait(0.45)
+        }
+        try await wait(1.2)
+
+        // Each kid plays the real machine, just like Larry at the casino. Kids keep trying until the house's three
+        // quarters of their leftover credits covers the hole, or all three salon chairs are full.
+        var recruits: [Person] = []
+        var credits: [String: Int] = [:]
+        func houseShare() -> Int { credits.values.reduce(0) { $0 + $1 - $1 / 4 } }
+        while recruits.count < SalonSpot.chairX.count && (recruits.count < needed || houseShare() < deficit) {
+            let kid = makePasserby(kid: true, taken: Set(recruits.map(\.wasName)))
+            if let left = try await kidPlays(kid) {
+                try await backyardPickup(kid)
+                credits[kid.wasName] = left
+                recruits.append(kid)
+            }
+        }
+        // A quarter of each kid's credits is his to bring home; the rest goes to the house.
+        rescueCredits = credits.values.reduce(0, +)
+        rescueShares = credits.mapValues { $0 / 4 }
+        tonightGame = Self.rescueGame(for: recruits.count)
+        tonight = recruits
+        rescuing = true
+        try await adjustment(recruits)
+    }
+
+    /// A just-for-fun game with seats for this many kids: one plays nines, two any four-handed game,
+    /// three play hearts with Lavender while the Princess watches.
+    private static func rescueGame(for kids: Int) -> HoldemTable.Game {
+        switch kids {
+        case 1: .nines
+        case 2: [.hearts, .ohHell, .californiaJack, .pisti, .big2, .ninetyNine].randomElement()!
+        default: .hearts
+        }
+    }
+
+    /// In the salon chair, the Princess tells the kids their credits go to the house and a quarter is theirs.
+    private func rescuePayout(_ kids: [Person]) async throws {
+        let kidsShare = rescueShares.values.reduce(0, +)
+        let house = rescueCredits - kidsShare
+        save.cash += house
+        save.totalProfit += house
+        save.store()
+        sound.coin()
+        caption = "\(rescueCredits) credits from the kids' computers: $\(house) into the cash box, $\(kidsShare) for the kids to bring home."
+        try await talk(princess, "The credits you had left on my game go to the house, " + (kids.count == 1 ? "honey." : "girls."), .princess)
+        try await talk(princess, "But a quarter of " + (kids.count == 1 ? "it is yours" : "them is yours") + " to bring home to your parents.", .princess)
+        try await talk(princess, save.cash >= 0 ? "That puts the cash box back at \(save.cash) dollars. We're out of the hole!"
+                                                 : "That puts the cash box at \(save.cash) dollars. Almost out of the hole!", .princess)
+    }
+
+    /// A boy finds the Princess of Poker on his computer and you play it for him, hand by hand, just like Larry at
+    /// the casino. Returns his leftover credits if he reaches game 10, nil if he busts, cashes out or misses the max bet.
+    private func kidPlays(_ kid: Person) async throws -> Int? {
+        clearScene()
+        mode = .story
+        place = .kidRoom
+        kid.visible = true
+        kid.opacity = 1
+        kid.mood = .happy
+        kid.place(height: 0)
+        kid.place(x: KidRoomSpot.standX)
+        people = [kid]
+        kidScreen = KidScreen()
+        caption = "At home, a boy named \(kid.name) finds a new game on his computer…"
+        try await wait(1.4)
+        try await talk(kid, ["Whoa, the Princess of Poker! Cool!", "A new game just popped up!", "Free credits? Let's play!"].randomElement()!, .boy)
+        kid.reachTo = KidRoomSpot.keyboard
+        shoot(CGPoint(x: 650, y: 360), zoom: 1.9, over: 1)
+        try await wait(1.4)
+
+        // The real machine: 200 credits, 9 games of 25 hands, max bet of 5 throughout to reach game 10.
+        sound.prepare()
+        let s = VideoPokerSession(sound: sound)
+        s.kidName = kid.name
+        poker = s
+        mode = .poker
+        s.begin()
+        while s.ending == nil { try await wait(0.3) }
+        let ending = s.ending!
+        try await wait(ending == .qualified ? 6 : 5)
+        poker = nil
+        mode = .story
+
+        kidScreen.game = s.game.number
+        kidScreen.credits = s.credits
+        if ending == .qualified {
+            kidScreen.game = 10
+            kidScreen.won = true
+            sound.chime()
+            kid.mood = .happy
+            caption = "\(kid.name) makes it to game 10 with \(s.credits) credits!"
+            try await talk(kid, "Game 10! I made it!", .boy)
+        } else {
+            kidScreen.over = true
+            kid.mood = .worried
+            switch ending {
+            case .broke:
+                caption = "\(kid.name) runs out of credits at game \(s.game.number) — no game 10 for him."
+                try await talk(kid, ["Aw, man! Out of credits.", "No fair! I was so close!"].randomElement()!, .boy)
+            case .notMaxBet:
+                caption = "\(kid.name) didn't play the max bet every hand — no game 10 for him."
+                try await talk(kid, "Aw! I should have bet five every time.", .boy)
+            default:
+                caption = "\(kid.name) cashes out at game \(s.game.number) with \(s.credits) credits — no game 10 for him."
+                try await talk(kid, "I'm done. Maybe tomorrow.", .boy)
+            }
+            caption = "The Princess of Poker pops up on another kid's computer…"
+            try await wait(1.6)
+        }
+        kid.reachTo = nil
+        shoot(CGPoint(x: Stage.W / 2, y: Stage.H / 2), zoom: 1, over: 0.8)
+        try await wait(1)
+        return ending == .qualified ? s.credits : nil
+    }
+
+    /// The flying salon lands in the back of the kid's house and pulls him inside.
+    private func backyardPickup(_ kid: Person) async throws {
+        sound.hum(true)
+        caption = "Then a humming sound comes from the backyard…"
+        kid.mood = .shocked
+        try await talk(kid, "What's that noise out back?", .boy)
+        kid.walk(to: -80, speed: 160)
+        try await wait(1.4)
+
+        place = .backyard
+        kid.place(x: BackyardSpot.doorX)
+        kid.mood = .happy
+        ship = SalonShip(x: BackyardSpot.shipX, y0: -320, y1: -320)
+        shipScale = 0.85
+        shipShown = true
+        ship.move(to: Stage.ground, over: 3.5)
+        caption = "The flying salon lands in the back of \(kid.name)'s house!"
+        kid.walk(to: 360, speed: 110)
+        try await wait(2.2)
+        kid.mood = .shocked
+        try await wait(1.5)
+        ship.flying = false
+        sound.hum(false)
+        sound.clunk()
+        try await talk(kid, "Whoa! A flying beauty salon?!", .boy)
+        ship.doorOpen = true
+        try await wait(0.5)
+        caption = "…and pulls him inside!"
+        say(kid, "Hey!", .boy)
+        sound.beam(true)
+        kid.walk(to: ship.x, speed: 170)
+        try await wait(max(1.8, kid.moveDur + 0.1))
+        kid.visible = false
+        ship.doorOpen = false
+        sound.beam(false)
+        sound.clunk()
+        try await wait(0.8)
+        ship.flying = true
+        ship.move(to: -320, over: 2.4)
+        sound.hum(true)
+        caption = "Up and away!"
+        try await wait(2.5)
+        sound.hum(false)
+        shipShown = false
     }
 
     func buy(_ u: Upgrade) {
