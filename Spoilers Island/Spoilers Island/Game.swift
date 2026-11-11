@@ -314,15 +314,18 @@ enum Tile: Equatable { case hidden, reading, given, passed, unused }
                 let g = r.guesses[id]!
                 let right = g == r.subject.name
                 r.shown.insert(id)
+                // A human still stuck in the booth hears only right/wrong, never another Spoiler's answer.
+                let hush = humanID.map { r.active.contains($0) && $0 != id } ?? false
+                let says = hush ? "\(name(id)) has an answer" : "\(name(id)) says \(g)"
                 if right {
                     r.retired.insert(id)
                     r.earned[id, default: 0] += SpoilerRound.reward
                     players[id].bank += SpoilerRound.reward
-                    r.host = "\(name(id)) says \(g)... that's RIGHT! \(name(id)) wins \(money(SpoilerRound.reward)) and is out of the round."
+                    r.host = "\(says)... that's RIGHT! \(name(id)) wins \(money(SpoilerRound.reward)) and is out of the round."
                 } else {
                     r.earned[seat, default: 0] += SpoilerRound.reward
                     players[seat].bank += SpoilerRound.reward
-                    r.host = "\(name(id)) says \(g)... no! \(money(SpoilerRound.reward)) to \(name(seat))."
+                    r.host = "\(says)... no! \(money(SpoilerRound.reward)) to \(name(seat))."
                 }
                 sfx(right ? .bell : .razz)
                 await pause(1.9)

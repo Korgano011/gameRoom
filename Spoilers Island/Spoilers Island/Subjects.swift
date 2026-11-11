@@ -35,7 +35,7 @@ enum SubjectBank {
     static func deck() -> [Subject] { all.shuffled() }
 
     /// Every subject: the originals plus the people, places, things, legends & icons, tunes, Japanese artists, movies & TV, cartoon characters, and Star Trek files.
-    static let all: [Subject] = core + people + places + things + icons + tunes + japaneseArtists + movies + tvShows + cartoons + starTrek
+    static let all: [Subject] = core + people + places + things + icons + tunes + japaneseArtists + japaneseMore + movies + tvShows + cartoons + starTrek + starTrekMore
 
     static func s(_ name: String, _ kind: Subject.Kind, _ decoys: [String], _ clues: [(Int, String)]) -> Subject {
         Subject(name: name, kind: kind, decoys: decoys, clues: clues.map { Clue(level: $0.0, text: $0.1) })
